@@ -33,6 +33,7 @@
 #include <Servo.h>
 #include "PinDefinitionsAndMore.h" // Define macros for input and output pin etc.
 #include <IRremote.hpp>
+#include <EEPROM.h>
 
 #define DECODE_NEC // defines the type of IR transmission to decode based on the remote. See IRremote library for examples on how to decode other types of remote
 
@@ -46,11 +47,22 @@
 */
 
 // defines the specific command code for each button on the remote
-#define left 0x8
-#define right 0x5A
-#define up 0x52
-#define down 0x18
-#define ok 0x1C
+
+struct RemoteCommands
+{
+  int left;
+  int right;
+  int up;
+  int down;
+  int ok;
+  int star;
+  int hashtag;
+};
+
+RemoteCommands defaultRemote = {0x8, 0x5A, 0x52, 0x18, 0x1C, 0x16, 0xD};
+RemoteCommands samsungRemote = {0x65, 0x62, 0x60, 0x61, 0x68, 0x79, 0xE6};
+RemoteCommands insigniaRemote = {0x16, 0x15, 0x42, 0x43, 0x18, 0x17, 0x10};
+
 #define cmd1 0x45
 #define cmd2 0x46
 #define cmd3 0x47
@@ -61,8 +73,6 @@
 #define cmd8 0x15
 #define cmd9 0x9
 #define cmd0 0x19
-#define star 0x16
-#define hashtag 0xD
 
 //////////////////////////////////////////////////
 //  PINS AND PARAMETERS  //
@@ -76,17 +86,18 @@ int yawServoVal; // initialize variables to store the current value of each serv
 int pitchServoVal = 100;
 int rollServoVal;
 
-int pitchMoveSpeed = 8; // this variable is the angle added to the pitch servo to control how quickly the PITCH servo moves - try values between 3 and 10
-int yawMoveSpeed = 90;  // this variable is the speed controller for the continuous movement of the YAW servo motor. It is added or subtracted from the yawStopSpeed, so 0 would mean full speed rotation in one direction, and 180 means full rotation in the other. Try values between 10 and 90;
+int pitchMoveSpeed = 4; // this variable is the angle added to the pitch servo to control how quickly the PITCH servo moves - try values between 3 and 10
+int yawMoveSpeed = 70;  // this variable is the speed controller for the continuous movement of the YAW servo motor. It is added or subtracted from the yawStopSpeed, so 0 would mean full speed rotation in one direction, and 180 means full rotation in the other. Try values between 10 and 90;
 int yawStopSpeed = 90;  // value to stop the yaw motor - keep this at 90
 int rollMoveSpeed = 90; // this variable is the speed controller for the continuous movement of the ROLL servo motor. It is added or subtracted from the rollStopSpeed, so 0 would mean full speed rotation in one direction, and 180 means full rotation in the other. Keep this at 90 for best performance / highest torque from the roll motor when firing.
 int rollStopSpeed = 90; // value to stop the roll motor - keep this at 90
 
-int yawPrecision = 150;  // this variable represents the time in milliseconds that the YAW motor will remain at it's set movement speed. Try values between 50 and 500 to start (500 milliseconds = 1/2 second)
+int yawPrecision = 100;  // this variable represents the time in milliseconds that the YAW motor will remain at it's set movement speed. Try values between 50 and 500 to start (500 milliseconds = 1/2 second)
 int rollPrecision = 158; // this variable represents the time in milliseconds that the ROLL motor with remain at it's set movement speed. If this ROLL motor is spinning more or less than 1/6th of a rotation when firing a single dart (one call of the fire(); command) you can try adjusting this value down or up slightly, but it should remain around the stock value (160ish) for best results.
 
 int pitchMax = 175; // this sets the maximum angle of the pitch servo to prevent it from crashing, it should remain below 180, and be greater than the pitchMin
 int pitchMin = 10;  // this sets the minimum angle of the pitch servo to prevent it from crashing, it should remain above 0, and be less than the pitchMax
+RemoteCommands activeRemote;
 
 //////////////////////////////////////////////////
 //  S E T U P  //
@@ -110,75 +121,7 @@ void setup()
   Serial.println(F("at pin " STR(9)));
 
   homeServos(); // set servo motors to home position
-}
-
-////////////////////////////////////////////////
-//  L O O P  //
-////////////////////////////////////////////////
-
-void loop()
-{
-
-  /*
-   * Check if received data is available and if yes, try to decode it.
-   */
-  if (IrReceiver.decode())
-  {
-
-    /*
-     * Print a short summary of received data
-     */
-    IrReceiver.printIRResultShort(&Serial);
-    IrReceiver.printIRSendUsage(&Serial);
-    if (IrReceiver.decodedIRData.protocol == UNKNOWN)
-    { // command garbled or not recognized
-      Serial.println(F("Received noise or an unknown (or not yet enabled) protocol - if you wish to add this command, define it at the top of the file with the hex code printed below (ex: 0x8)"));
-      // We have an unknown protocol here, print more info
-      IrReceiver.printIRResultRawFormatted(&Serial, true);
-    }
-    Serial.println();
-
-    /*
-     * !!!Important!!! Enable receiving of the next value,
-     * since receiving has stopped after the end of the current received data packet.
-     */
-    IrReceiver.resume(); // Enable receiving of the next value
-
-    /*
-     * Finally, check the received data and perform actions according to the received command
-     */
-
-    switch (IrReceiver.decodedIRData.command)
-    { // this is where the commands are handled
-
-    case up: // pitch up
-      upMove(1);
-      break;
-
-    case down: // pitch down
-      downMove(1);
-      break;
-
-    case left: // fast counterclockwise rotation
-      leftMove(1);
-      break;
-
-    case right: // fast clockwise rotation
-      rightMove(1);
-      break;
-
-    case ok: // firing routine
-      fire();
-      // Serial.println("FIRE");
-      break;
-
-    case star:
-      fireAll();
-      delay(50);
-      break;
-    }
-  }
-  delay(5);
+  activeRemote = insigniaRemote;
 }
 
 void shakeHeadYes(int moves = 3)
@@ -311,4 +254,88 @@ void homeServos()
   delay(100);
   pitchServoVal = 100; // store the pitch servo value
   Serial.println("HOMING");
+}
+
+////////////////////////////////////////////////
+//  L O O P  //
+////////////////////////////////////////////////
+
+void loop()
+{
+
+  /*
+   * Check if received data is available and if yes, try to decode it.
+   */
+  if (IrReceiver.decode())
+  {
+
+    /*
+     * Print a short summary of received data
+     */
+    IrReceiver.printIRResultShort(&Serial);
+    IrReceiver.printIRSendUsage(&Serial);
+    if (IrReceiver.decodedIRData.protocol == UNKNOWN)
+    { // command garbled or not recognized
+      Serial.println(F("Received noise or an unknown (or not yet enabled) protocol - if you wish to add this command, define it at the top of the file with the hex code printed below (ex: 0x8)"));
+      // We have an unknown protocol here, print more info
+      IrReceiver.printIRResultRawFormatted(&Serial, true);
+    }
+    Serial.println();
+
+    /*
+     * !!!Important!!! Enable receiving of the next value,
+     * since receiving has stopped after the end of the current received data packet.
+     */
+    IrReceiver.resume(); // Enable receiving of the next value
+
+    /*
+     * Finally, check the received data and perform actions according to the received command
+     */
+
+    int command = IrReceiver.decodedIRData.command;
+    if (command == activeRemote.up)
+    { // pitch up
+      upMove(1);
+    }
+    else if (command == activeRemote.down)
+    { // pitch down
+      downMove(1);
+    }
+    else if (command == activeRemote.left)
+    { // fast counterclockwise rotation
+      leftMove(1);
+    }
+    else if (command == activeRemote.right)
+    { // fast clockwise rotation
+      rightMove(1);
+    }
+    else if (command == activeRemote.ok)
+    { // firing routine
+      fire();
+      // Serial.println("FIRE");
+    }
+    else if (command == activeRemote.star)
+    {
+      fireAll();
+      delay(50);
+    }
+    else if (command == defaultRemote.hashtag || command == samsungRemote.hashtag || command == insigniaRemote.hashtag)
+    {
+      if (command == defaultRemote.hashtag)
+      {
+        activeRemote = defaultRemote;
+      }
+      else if (command == samsungRemote.hashtag)
+      {
+        activeRemote = samsungRemote;
+      }
+      else if (command == insigniaRemote.hashtag)
+      {
+        activeRemote = insigniaRemote;
+      }
+      Serial.println("REMOTE CHANGED");
+      shakeHeadYes(1);
+    }
+  }
+  delay(5);
 }
